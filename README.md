@@ -34,14 +34,20 @@ A Flask-based REST API that fetches **OpenID, nickname, and region** from `shop2
 git clone https://github.com/itz-paglu/Free-Fire-OpenID.git
 cd Free-Fire-OpenID
 
+---
+
+---
+
 📡 API Endpoints
 🔹 Get User OpenID
-
+---
 Endpoint
 GET /username?uid=<USER_ID>
+---
 Example
 
 curl "http://localhost:5000/username?uid=123456789"
+---
 Success Response
 
 {
@@ -52,7 +58,7 @@ Success Response
   "open_id": "ABCDEFG123456"
 }
 
-
+---
 Error Response
 
 {
@@ -128,5 +134,4 @@ If this project helps you:
 🍴 Fork it
 
 🐞 Report issues responsibly
-## 📂 Project Structure
 
