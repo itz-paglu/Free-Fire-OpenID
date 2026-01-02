@@ -123,7 +123,7 @@ The author is not responsible for any misuse or damage caused by this software.
 👨‍💻 Author
 
 Tarikul Islam
-https: tarikulislam.vercel.app
+https://tarikulislam.vercel.app
 
 ⭐ Support
 
