@@ -30,13 +30,11 @@ A Flask-based REST API that fetches **OpenID, nickname, and region** from `shop2
 ## ⚙️ Installation
 
 ### 1️⃣ Clone the Repository
+
 ```bash
 git clone https://github.com/itz-paglu/Free-Fire-OpenID.git
 cd Free-Fire-OpenID
-
----
-
----
+```
 
 📡 API Endpoints
 🔹 Get User OpenID
@@ -49,7 +47,7 @@ Example
 curl "http://localhost:5000/username?uid=123456789"
 ---
 Success Response
-
+```bash
 {
   "success": true,
   "nickname": "PlayerName",
@@ -57,16 +55,18 @@ Success Response
   "account_id": "123456789",
   "open_id": "ABCDEFG123456"
 }
+```
+
 
 ---
 Error Response
-
+```bash
 {
   "success": false,
   "error": "Invalid or expired session",
   "code": 401
 }
-
+```
 🔹 Health Check
 
 Endpoint
@@ -75,14 +75,14 @@ GET /health
 
 
 Response
-
+```bash
 {
   "status": "healthy",
   "session_status": "active",
   "session_age": "12 minutes 30 seconds",
   "timestamp": "2026-01-02T18:40:12.123456"
 }
-
+```
 🔹 Force Session Refresh
 
 Endpoint
@@ -91,12 +91,12 @@ POST /refresh-session
 
 
 Response
-
+```bash
 {
   "success": true,
   "message": "Session will be refreshed on next request"
 }
-
+```
 🔐 Session & Cookie Logic
 
 Cookies are fetched automatically from homepage
@@ -134,4 +134,3 @@ If this project helps you:
 🍴 Fork it
 
 🐞 Report issues responsibly
-
