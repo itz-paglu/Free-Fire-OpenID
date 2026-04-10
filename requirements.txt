@@ -1,2 +1,4 @@
 flask
-curl-cffi
+requests
+camoufox[geoip]
+gunicorn
