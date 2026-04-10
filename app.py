@@ -2,43 +2,73 @@ from flask import Flask, request, jsonify
 import requests
 from urllib.parse import urlparse
 from datetime import datetime
+from playwright.sync_api import sync_playwright
 
 app = Flask(__name__)
-
-# -----------------------------
-#  free fire open id fetch API (no session caching - fresh session per request)
-#  credits: https:tarikulislam.vercel.app
-# -----------------------------
 
 BASE_URL = "https://shop2game.com"
 
 
-def create_fresh_session():
-    """Create a new session with fresh cookies for every request"""
-    session = requests.Session()
+def get_real_browser_cookies():
+    """Playwright দিয়ে real browser চালিয়ে DataDome cookie নিয়ে আসো"""
+    print("🌐 Launching headless browser to fetch real cookies...")
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept-Encoding": "gzip, deflate, br",
-        "Connection": "keep-alive",
-        "Upgrade-Insecure-Requests": "1"
-    }
+    with sync_playwright() as p:
+        browser = p.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage"
+            ]
+        )
 
-    try:
-        response = session.get(BASE_URL, headers=headers, timeout=15)
-        print(f"✅ Fresh session created at {datetime.now().strftime('%H:%M:%S')} | Status: {response.status_code}")
-        print(f"📦 Cookies obtained: {list(session.cookies.keys())}")
-    except Exception as e:
-        print(f"❌ Error during session init: {e}")
+        context = browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/142.0.0.0 Mobile Safari/537.36"
+            ),
+            viewport={"width": 390, "height": 844},
+            locale="en-US",
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9"
+            }
+        )
 
-    return session
+        # Bot detection এড়াতে
+        context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3] });
+            window.chrome = { runtime: {} };
+        """)
+
+        page = context.new_page()
+
+        try:
+            # Homepage visit করো যাতে DataDome cookie সেট হয়
+            page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
+            print(f"✅ Page loaded: {page.title()}")
+
+            # কিছুটা human-like delay
+            page.wait_for_timeout(2000)
+
+            # সব cookie নাও
+            cookies = context.cookies()
+            cookie_dict = {c["name"]: c["value"] for c in cookies}
+            print(f"📦 Cookies fetched: {list(cookie_dict.keys())}")
+
+            return cookie_dict
+
+        except Exception as e:
+            print(f"❌ Browser error: {e}")
+            return {}
+
+        finally:
+            browser.close()
 
 
 def _get_openid_headers():
-    """Generate request headers"""
     host = urlparse(BASE_URL).netloc
     return {
         "Accept": "application/json, text/plain, */*",
@@ -48,12 +78,15 @@ def _get_openid_headers():
         "Content-Type": "application/json",
         "Host": host,
         "Origin": BASE_URL,
-        "Referer": BASE_URL,
+        "Referer": f"{BASE_URL}/",
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
-        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
-                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/142.0.0.0 Mobile Safari/537.36"
+        ),
         "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
         "sec-ch-ua-mobile": "?1",
         "sec-ch-ua-platform": '"Android"'
@@ -61,7 +94,7 @@ def _get_openid_headers():
 
 
 def get_openid_data(account_id):
-    """Get OpenID data using a brand new session every time"""
+    """প্রতিটি request-এ real browser cookie দিয়ে API call করো"""
     payload = {
         "app_id": 100067,
         "login_id": str(account_id)
@@ -69,14 +102,23 @@ def get_openid_data(account_id):
 
     url = f"{BASE_URL}/api/auth/player_id_login"
 
-    # Always create fresh session — no cache
-    session = create_fresh_session()
+    # Real browser থেকে cookie আনো
+    cookies = get_real_browser_cookies()
+
+    if not cookies:
+        return {"success": False, "error": "Failed to obtain browser cookies"}
+
     headers = _get_openid_headers()
 
     try:
-        response = session.post(url, headers=headers, json=payload, timeout=15)
+        response = requests.post(
+            url,
+            headers=headers,
+            cookies=cookies,
+            json=payload,
+            timeout=15
+        )
         data = response.json()
-
         print(f"📥 API Response: {data}")
 
         open_id = data.get("open_id")
@@ -102,15 +144,11 @@ def get_openid_data(account_id):
     except Exception as e:
         print(f"❌ Unexpected Error: {e}")
         return {"success": False, "error": f"Unexpected error: {str(e)}"}
-    finally:
-        session.close()  # Session শেষে বন্ধ করে দাও
 
 
 @app.route("/username", methods=["GET"])
 def api_openid():
-    """API endpoint to get user info by UID"""
     uid = request.args.get("uid")
-
     if not uid:
         return jsonify({"success": False, "error": "Missing 'uid' parameter"}), 400
 
@@ -124,19 +162,17 @@ def api_openid():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint"""
     return jsonify({
         "status": "healthy",
-        "session_mode": "no-cache (fresh per request)",
+        "mode": "playwright-real-browser-cookies",
         "timestamp": datetime.now().isoformat()
     }), 200
 
 
 if __name__ == "__main__":
-    print("🚀 Starting Flask API — No Session Cache Mode")
+    print("🚀 Starting Flask API — Playwright Cookie Mode")
     print("📍 Endpoints:")
     print("   GET  /username?uid=<user_id>")
     print("   GET  /health")
     print("-" * 50)
-
     app.run(host="0.0.0.0", port=5000, debug=True)
