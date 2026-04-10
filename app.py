@@ -2,68 +2,82 @@ from flask import Flask, request, jsonify
 import requests
 from urllib.parse import urlparse
 from datetime import datetime, timedelta
-from camoufox.sync_api import Camoufox
 import threading
+import time
 
 app = Flask(__name__)
-BASE_URL = "https://shop2game.com"
 
-# Cookie cache — প্রতি request-এ browser খুলবে না
-COOKIE_CACHE = {
-    "cookies": None,
-    "expires_at": None,
+# -----------------------------
+#  free fire open id fetch API with auto cookie management
+#  credits: https:tarikulislam.vercel.app
+# -----------------------------
+
+# Global session cache with thread safety
+SESSION_CACHE = {
+    "session": None,
+    "created_at": None,
+    "ttl_minutes": 25,  # Refresh every 25 minutes
     "lock": threading.Lock()
 }
-COOKIE_TTL_MINUTES = 20
 
 
-def get_cached_cookies():
-    """Cookie cache থেকে নাও, না থাকলে browser দিয়ে আনো"""
-    with COOKIE_CACHE["lock"]:
-        now = datetime.now()
-
-        if (
-            COOKIE_CACHE["cookies"] is None or
-            COOKIE_CACHE["expires_at"] is None or
-            now >= COOKIE_CACHE["expires_at"]
-        ):
-            print("🦊 Launching Camoufox for fresh cookies...")
-            cookies = _fetch_cookies_via_browser()
-            if cookies:
-                COOKIE_CACHE["cookies"] = cookies
-                COOKIE_CACHE["expires_at"] = now + timedelta(minutes=COOKIE_TTL_MINUTES)
-                print(f"✅ Cookies cached for {COOKIE_TTL_MINUTES} minutes")
-            return cookies
-        else:
-            remaining = (COOKIE_CACHE["expires_at"] - now).seconds // 60
-            print(f"✓ Using cached cookies ({remaining} min remaining)")
-            return COOKIE_CACHE["cookies"]
-
-
-def _fetch_cookies_via_browser():
-    """Camoufox দিয়ে DataDome cookie আনো"""
+def create_fresh_session(base_url):
+    """Create a new session with fresh cookies"""
     try:
-        with Camoufox(headless=True, geoip=True) as browser:
-            page = browser.new_page()
-            page.goto(BASE_URL, wait_until="networkidle", timeout=30000)
-            page.wait_for_timeout(3000)
-
-            cookies = page.context.cookies()
-            cookie_dict = {c["name"]: c["value"] for c in cookies}
-            print(f"📦 Cookies: {list(cookie_dict.keys())}")
-
-            if "datadome" not in cookie_dict:
-                print("⚠️ datadome cookie missing!")
-                return None
-
-            return cookie_dict
+        session = requests.Session()
+        
+        # Visit homepage to get initial cookies
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
+        }
+        
+        response = session.get(base_url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            print(f"✅ Fresh session created at {datetime.now().strftime('%H:%M:%S')}")
+            print(f"📦 Cookies obtained: {list(session.cookies.keys())}")
+            return session
+        else:
+            print(f"⚠️ Homepage returned status: {response.status_code}")
+            return session
+            
     except Exception as e:
-        print(f"❌ Browser error: {e}")
-        return None
+        print(f"❌ Error creating session: {e}")
+        return requests.Session()
 
 
-def _get_headers():
-    host = urlparse(BASE_URL).netloc
+def get_or_refresh_session(base_url):
+    """Get cached session or create new one if expired (thread-safe)"""
+    with SESSION_CACHE["lock"]:
+        now = datetime.now()
+        
+        # Check if session needs refresh
+        needs_refresh = (
+            SESSION_CACHE["session"] is None or
+            SESSION_CACHE["created_at"] is None or
+            (now - SESSION_CACHE["created_at"]) > timedelta(minutes=SESSION_CACHE["ttl_minutes"])
+        )
+        
+        if needs_refresh:
+            SESSION_CACHE["session"] = create_fresh_session(base_url)
+            SESSION_CACHE["created_at"] = now
+            print(f"🔄 Session refreshed. Next refresh in {SESSION_CACHE['ttl_minutes']} minutes")
+        else:
+            time_left = SESSION_CACHE["ttl_minutes"] - (now - SESSION_CACHE["created_at"]).seconds // 60
+            print(f"✓ Using cached session. {time_left} minutes remaining")
+        
+        return SESSION_CACHE["session"]
+
+
+def _get_openid_headers(base_url):
+    """Generate request headers"""
+    host = urlparse(base_url).netloc
     return {
         "Accept": "application/json, text/plain, */*",
         "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -71,42 +85,56 @@ def _get_headers():
         "Connection": "keep-alive",
         "Content-Type": "application/json",
         "Host": host,
-        "Origin": BASE_URL,
-        "Referer": f"{BASE_URL}/",
+        "Origin": base_url,
+        "Referer": base_url,
         "Sec-Fetch-Dest": "empty",
         "Sec-Fetch-Mode": "cors",
         "Sec-Fetch-Site": "same-origin",
-        "User-Agent": (
-            "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/142.0.0.0 Mobile Safari/537.36"
-        ),
+        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
         "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
         "sec-ch-ua-mobile": "?1",
         "sec-ch-ua-platform": '"Android"'
     }
 
 
-def get_openid_data(account_id):
-    payload = {"app_id": 100067, "login_id": str(account_id)}
-    url = f"{BASE_URL}/api/auth/player_id_login"
+def get_openid_data(account_id, retry_count=0, max_retries=2):
+    """Get OpenID data with automatic retry on cookie expiry"""
+    payload = {
+        "app_id": 100067,
+        "login_id": str(account_id)
+    }
 
-    cookies = get_cached_cookies()
-    if not cookies:
-        return {"success": False, "error": "Failed to obtain cookies"}
+    base_url = "https://shop2game.com"
+    url = f"{base_url}/api/auth/player_id_login"
+    
+    # Get session with valid cookies
+    session = get_or_refresh_session(base_url)
+    headers = _get_openid_headers(base_url)
 
     try:
-        response = requests.post(url, headers=_get_headers(), cookies=cookies, json=payload, timeout=15)
+        response = session.post(url, headers=headers, json=payload, timeout=15)
         data = response.json()
-        print(f"📥 Response: {data}")
-
-        # DataDome আবার block করলে cache clear করো
-        if "captcha-delivery.com" in str(data):
-            print("🔄 DataDome blocked, clearing cookie cache...")
-            with COOKIE_CACHE["lock"]:
-                COOKIE_CACHE["cookies"] = None
-            return {"success": False, "error": "Blocked by DataDome, please retry"}
-
+        
+        print(f"📥 API Response: {data}")
+        
+        # Check if cookie expired (common error patterns)
+        error_indicators = [
+            data.get("code") == 401,
+            data.get("code") == 403,
+            "invalid" in str(data.get("message", "")).lower(),
+            "expired" in str(data.get("message", "")).lower(),
+            "unauthorized" in str(data.get("message", "")).lower()
+        ]
+        
+        if any(error_indicators) and retry_count < max_retries:
+            print(f"🔁 Cookie might be expired. Retrying... (Attempt {retry_count + 1}/{max_retries})")
+            # Force refresh session
+            with SESSION_CACHE["lock"]:
+                SESSION_CACHE["session"] = None
+            time.sleep(1)  # Brief delay before retry
+            return get_openid_data(account_id, retry_count + 1, max_retries)
+        
         open_id = data.get("open_id")
         if open_id:
             return {
@@ -116,46 +144,75 @@ def get_openid_data(account_id):
                 "account_id": account_id,
                 "open_id": open_id,
             }
-        return {
-            "success": False,
-            "error": data.get("message", "Unknown error"),
-            "code": data.get("code"),
-            "raw_response": data
-        }
+        else:
+            return {
+                "success": False,
+                "error": data.get("message", "Unknown error"),
+                "code": data.get("code"),
+                "raw_response": data
+            }
 
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Network Error: {e}")
+        return {"success": False, "error": f"Network error: {str(e)}"}
     except Exception as e:
-        return {"success": False, "error": str(e)}
+        print(f"❌ Unexpected Error: {e}")
+        return {"success": False, "error": f"Unexpected error: {str(e)}"}
 
 
 @app.route("/username", methods=["GET"])
 def api_openid():
+    """API endpoint to get user info by UID"""
     uid = request.args.get("uid")
+
     if not uid:
         return jsonify({"success": False, "error": "Missing 'uid' parameter"}), 400
+
     result = get_openid_data(uid)
-    return jsonify(result), 200 if result.get("success") else 500
+    
+    if not result.get("success"):
+        return jsonify(result), 404 if "not found" in str(result.get("error", "")).lower() else 500
+    
+    return jsonify(result), 200
 
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    with COOKIE_CACHE["lock"]:
-        has_cookies = COOKIE_CACHE["cookies"] is not None
-        expires = COOKIE_CACHE["expires_at"].isoformat() if COOKIE_CACHE["expires_at"] else None
+    """Health check endpoint"""
+    with SESSION_CACHE["lock"]:
+        session_status = "active" if SESSION_CACHE["session"] else "not initialized"
+        session_age = None
+        if SESSION_CACHE["created_at"]:
+            age_seconds = (datetime.now() - SESSION_CACHE["created_at"]).seconds
+            session_age = f"{age_seconds // 60} minutes {age_seconds % 60} seconds"
+    
     return jsonify({
         "status": "healthy",
-        "cookies_cached": has_cookies,
-        "cache_expires_at": expires,
+        "session_status": session_status,
+        "session_age": session_age,
         "timestamp": datetime.now().isoformat()
     }), 200
 
 
-@app.route("/refresh-cookies", methods=["POST"])
-def refresh_cookies():
-    with COOKIE_CACHE["lock"]:
-        COOKIE_CACHE["cookies"] = None
-        COOKIE_CACHE["expires_at"] = None
-    return jsonify({"success": True, "message": "Cookie cache cleared"}), 200
+@app.route("/refresh-session", methods=["POST"])
+def force_refresh():
+    """Manually force session refresh"""
+    with SESSION_CACHE["lock"]:
+        SESSION_CACHE["session"] = None
+        SESSION_CACHE["created_at"] = None
+    
+    return jsonify({
+        "success": True,
+        "message": "Session will be refreshed on next request"
+    }), 200
 
 
 if __name__ == "__main__":
+    print("🚀 Starting Flask API with Auto Cookie Management")
+    print("📍 Endpoints:")
+    print("   GET  /username?uid=<user_id>")
+    print("   GET  /health")
+    print("   POST /refresh-session")
+    print("-" * 50)
+    
     app.run(host="0.0.0.0", port=5000, debug=True)
