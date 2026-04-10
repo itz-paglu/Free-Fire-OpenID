@@ -2,3 +2,5 @@ flask
 requests
 chromium
 playwright
+camoufox[geoip]
+python -m camoufox fetch
