@@ -1,92 +1,63 @@
-import os
 from flask import Flask, request, jsonify
 import requests
+from urllib.parse import urlparse
 from datetime import datetime, timedelta
 import threading
 import time
-from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth
 
 app = Flask(__name__)
 
 # -----------------------------
-#  Free Fire OpenID fetch API with DataDome Bypass
-#  Using Playwright Chromium Stealth (Render optimized)
+#  free fire open id fetch API with auto cookie management
+#  credits: https:tarikulislam.vercel.app
 # -----------------------------
 
 # Global session cache with thread safety
 SESSION_CACHE = {
     "session": None,
     "created_at": None,
-    "ttl_minutes": 25,  # Datadome cookies usually valid for a good period
+    "ttl_minutes": 25,  # Refresh every 25 minutes
     "lock": threading.Lock()
 }
 
 
-def create_fresh_session():
-    """Launch headless browser to solve DataDome and extract cookies"""
-    print(f"🔄 Launching Playwright to harvest DataDome cookies at {datetime.now().strftime('%H:%M:%S')}")
-    session = requests.Session()
-    
-    # Base headers that match the browser exactly
-    user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-    session.headers.update({
-        "User-Agent": user_agent,
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/json",
-        "Referer": "https://shop2game.com/"
-    })
-
+def create_fresh_session(base_url):
+    """Create a new session with fresh cookies"""
     try:
-        with sync_playwright() as p:
-            # Render needs no-sandbox args to run chromium successfully as root/system
-            browser = p.chromium.launch(headless=True, args=[
-                "--no-sandbox", 
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled"
-            ])
-            context = browser.new_context(
-                user_agent=user_agent,
-                viewport={'width': 1280, 'height': 720}
-            )
-            page = context.new_page()
-            
-            # Apply stealth plugin to hide webdriver signatures from DataDome
-            stealth(page)
-            
-            # Navigate to the site and let the JS load
-            page.goto("https://shop2game.com", timeout=30000)
-            
-            # It's crucial to wait a bit so DataDome's Javascript executes and stores the valid cookie
-            time.sleep(4)
-            
-            # Extract cookies and bind them to our lightweight requests Session
-            cookies = context.cookies()
-            datadome_cookie_found = False
-            for c in cookies:
-                session.cookies.set(c['name'], c['value'], domain=c.get('domain', ''))
-                if "datadome" in c['name'].lower():
-                    datadome_cookie_found = True
-            
-            browser.close()
-            
-            if datadome_cookie_found:
-                print("✅ Valid DataDome cookie harvested successfully!")
-            else:
-                print("⚠️ Warning: DataDome cookie not found! It might fail.")
+        session = requests.Session()
+        
+        # Visit homepage to get initial cookies
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+                          "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1"
+        }
+        
+        response = session.get(base_url, headers=headers, timeout=15)
+        
+        if response.status_code == 200:
+            print(f"✅ Fresh session created at {datetime.now().strftime('%H:%M:%S')}")
+            print(f"📦 Cookies obtained: {list(session.cookies.keys())}")
+            return session
+        else:
+            print(f"⚠️ Homepage returned status: {response.status_code}")
+            return session
             
     except Exception as e:
-        print(f"❌ Error harvesting cookies: {e}")
-        
-    return session
+        print(f"❌ Error creating session: {e}")
+        return requests.Session()
 
 
-def get_or_refresh_session():
+def get_or_refresh_session(base_url):
     """Get cached session or create new one if expired (thread-safe)"""
     with SESSION_CACHE["lock"]:
         now = datetime.now()
         
+        # Check if session needs refresh
         needs_refresh = (
             SESSION_CACHE["session"] is None or
             SESSION_CACHE["created_at"] is None or
@@ -94,39 +65,75 @@ def get_or_refresh_session():
         )
         
         if needs_refresh:
-            SESSION_CACHE["session"] = create_fresh_session()
+            SESSION_CACHE["session"] = create_fresh_session(base_url)
             SESSION_CACHE["created_at"] = now
+            print(f"🔄 Session refreshed. Next refresh in {SESSION_CACHE['ttl_minutes']} minutes")
+        else:
+            time_left = SESSION_CACHE["ttl_minutes"] - (now - SESSION_CACHE["created_at"]).seconds // 60
+            print(f"✓ Using cached session. {time_left} minutes remaining")
         
         return SESSION_CACHE["session"]
 
 
-def get_openid_data(account_id, retry_count=0, max_retries=1):
-    """Fetch user open_id with DataDome bypass"""
-    url = "https://shop2game.com/api/auth/player_id_login"
+def _get_openid_headers(base_url):
+    """Generate request headers"""
+    host = urlparse(base_url).netloc
+    return {
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate, br, zstd",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Connection": "keep-alive",
+        "Content-Type": "application/json",
+        "Host": host,
+        "Origin": base_url,
+        "Referer": base_url,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "User-Agent": "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+                      "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36",
+        "sec-ch-ua": '"Chromium";v="142", "Google Chrome";v="142", "Not_A Brand";v="99"',
+        "sec-ch-ua-mobile": "?1",
+        "sec-ch-ua-platform": '"Android"'
+    }
+
+
+def get_openid_data(account_id, retry_count=0, max_retries=2):
+    """Get OpenID data with automatic retry on cookie expiry"""
     payload = {
         "app_id": 100067,
         "login_id": str(account_id)
     }
 
-    # Fetch pre-authorized session
-    session = get_or_refresh_session()
+    base_url = "https://shop2game.com"
+    url = f"{base_url}/api/auth/player_id_login"
+    
+    # Get session with valid cookies
+    session = get_or_refresh_session(base_url)
+    headers = _get_openid_headers(base_url)
 
     try:
-        # Lightweight fast request
-        response = session.post(url, json=payload, timeout=10)
-        
-        # If blocked by datadome, trigger cookie re-harvest (once)
-        if response.status_code in [403, 401] or "captcha" in response.text.lower():
-            print(f"🔁 Caught DataDome Captcha (Status {response.status_code}). Retrying...")
-            if retry_count < max_retries:
-                with SESSION_CACHE["lock"]:
-                    SESSION_CACHE["session"] = None # Force session invalidation
-                return get_openid_data(account_id, retry_count + 1, max_retries)
-            else:
-                return {"success": False, "error": "Hit captcha and max retries exceeded."}
-                
+        response = session.post(url, headers=headers, json=payload, timeout=15)
         data = response.json()
+        
         print(f"📥 API Response: {data}")
+        
+        # Check if cookie expired (common error patterns)
+        error_indicators = [
+            data.get("code") == 401,
+            data.get("code") == 403,
+            "invalid" in str(data.get("message", "")).lower(),
+            "expired" in str(data.get("message", "")).lower(),
+            "unauthorized" in str(data.get("message", "")).lower()
+        ]
+        
+        if any(error_indicators) and retry_count < max_retries:
+            print(f"🔁 Cookie might be expired. Retrying... (Attempt {retry_count + 1}/{max_retries})")
+            # Force refresh session
+            with SESSION_CACHE["lock"]:
+                SESSION_CACHE["session"] = None
+            time.sleep(1)  # Brief delay before retry
+            return get_openid_data(account_id, retry_count + 1, max_retries)
         
         open_id = data.get("open_id")
         if open_id:
@@ -155,14 +162,17 @@ def get_openid_data(account_id, retry_count=0, max_retries=1):
 
 @app.route("/username", methods=["GET"])
 def api_openid():
+    """API endpoint to get user info by UID"""
     uid = request.args.get("uid")
+
     if not uid:
         return jsonify({"success": False, "error": "Missing 'uid' parameter"}), 400
 
     result = get_openid_data(uid)
+    
     if not result.get("success"):
-        return jsonify(result), 400
-        
+        return jsonify(result), 404 if "not found" in str(result.get("error", "")).lower() else 500
+    
     return jsonify(result), 200
 
 
@@ -178,14 +188,31 @@ def health_check():
     
     return jsonify({
         "status": "healthy",
-        "api_mode": "playwright_stealth_local",
         "session_status": session_status,
         "session_age": session_age,
         "timestamp": datetime.now().isoformat()
     }), 200
 
 
+@app.route("/refresh-session", methods=["POST"])
+def force_refresh():
+    """Manually force session refresh"""
+    with SESSION_CACHE["lock"]:
+        SESSION_CACHE["session"] = None
+        SESSION_CACHE["created_at"] = None
+    
+    return jsonify({
+        "success": True,
+        "message": "Session will be refreshed on next request"
+    }), 200
+
+
 if __name__ == "__main__":
-    print("Starting Flask API with Playwright Stealth (Render optimized)")
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port, debug=True)
+    print("🚀 Starting Flask API with Auto Cookie Management")
+    print("📍 Endpoints:")
+    print("   GET  /username?uid=<user_id>")
+    print("   GET  /health")
+    print("   POST /refresh-session")
+    print("-" * 50)
+    
+    app.run(host="0.0.0.0", port=5000, debug=True)
