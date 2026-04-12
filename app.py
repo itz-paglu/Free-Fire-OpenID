@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 import threading
 import time
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
+from playwright_stealth import stealth
 
 app = Flask(__name__)
 
@@ -53,7 +53,7 @@ def create_fresh_session():
             page = context.new_page()
             
             # Apply stealth plugin to hide webdriver signatures from DataDome
-            stealth_sync(page)
+            stealth(page)
             
             # Navigate to the site and let the JS load
             page.goto("https://shop2game.com", timeout=30000)
@@ -186,6 +186,6 @@ def health_check():
 
 
 if __name__ == "__main__":
-    print("🚀 Starting Flask API with Playwright Stealth (Render optimized)")
+    print("Starting Flask API with Playwright Stealth (Render optimized)")
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, debug=True)
